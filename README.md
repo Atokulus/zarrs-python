@@ -56,6 +56,9 @@ The `ZarrsCodecPipeline` specific options are:
   - Defaults to `False`.
 - `codec_pipeline.strict`: raise exceptions for unsupported operations instead of falling back to the default codec pipeline of `zarr-python`.
   - Defaults to `False`.
+- `codec_pipeline.experimental_partial_encoding`: enable the experimental `zarrs` partial encoder for stores that support partial writes. For sharded arrays, writes that do not cover an entire shard then encode and write only the affected inner chunks plus the updated shard index.
+  - Defaults to `False`.
+  - Align writes to inner chunk boundaries where possible. Updating only part of an inner chunk requires reading that inner chunk, and replacing existing inner chunks can leave unused bytes in the append-only shard layout.
 
 For example:
 ```python
@@ -70,6 +73,7 @@ zarr.config.set({
         "file_handle_cache_size": 0,
         "direct_io": False,
         "strict": False,
+        "experimental_partial_encoding": False,
     },
 })
 ```

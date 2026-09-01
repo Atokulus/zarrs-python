@@ -1,10 +1,11 @@
 import warnings
+from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
 import pytest
-from zarr import create_array
+from zarr import config, create_array
 from zarr.abc.store import Store
 from zarr.api.asynchronous import create_array as create_async_array
 from zarr.codecs import (
@@ -265,6 +266,51 @@ def test_write_partial_sharded_chunks(store: Store) -> None:
     )
     a[0:16, 0:16] = data
     assert np.array_equal(a[0:16, 0:16], data)
+
+
+@pytest.mark.parametrize("index_location", ["start", "end"])
+@pytest.mark.parametrize("experimental_partial_encoding", [False, True])
+def test_experimental_partial_encoding_updates_shard_in_place(
+    store: Store,
+    tmp_path: Path,
+    index_location: IndexLocation,
+    *,
+    experimental_partial_encoding: bool,
+) -> None:
+    path = f"partial_encoding_{index_location}_{experimental_partial_encoding}"
+    with config.set(
+        {
+            "codec_pipeline.experimental_partial_encoding": experimental_partial_encoding,
+        }
+    ):
+        a = create_array(
+            StorePath(store, path),
+            shape=(16,),
+            chunks=(4,),
+            shards=ShardsConfigParam(shape=(16,), index_location=index_location),
+            dtype="uint16",
+            fill_value=0,
+            compressors=[],
+        )
+        initial = np.arange(1, 9, dtype="uint16")
+        a[0:8] = initial
+        shard_path = tmp_path / path / "c" / "0"
+        initial_size = shard_path.stat().st_size
+
+        updated = np.arange(5, 9, dtype="uint16")
+        a[0:4] = updated
+        updated_size = shard_path.stat().st_size
+
+        assert np.array_equal(a[0:4], updated)
+        assert np.array_equal(a[4:8], initial[4:8])
+        assert np.all(a[8:] == 0)
+        if experimental_partial_encoding:
+            # zarrs updates shards append-only: the replacement inner chunk is appended and
+            # its index entry is changed without rewriting the existing inner chunk bytes.
+            assert updated_size == initial_size + updated.nbytes
+        else:
+            # The fallback re-encodes the shard, so replacing fixed-size data does not grow it.
+            assert updated_size == initial_size
 
 
 async def test_delete_empty_shards(store: Store) -> None:

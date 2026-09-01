@@ -65,6 +65,9 @@ def get_codec_pipeline_impl(
             file_handle_cache_size=config.get(
                 "codec_pipeline.file_handle_cache_size", 0
             ),
+            experimental_partial_encoding=config.get(
+                "codec_pipeline.experimental_partial_encoding", False
+            ),
         )
     except TypeError as e:
         if strict:

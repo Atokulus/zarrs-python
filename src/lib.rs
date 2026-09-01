@@ -18,15 +18,18 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rayon_iter_concurrent_limit::iter_concurrent_limit;
 use unsafe_cell_slice::UnsafeCellSlice;
 use utils::is_whole_chunk;
+use zarrs::array::codec::api::StoragePartialEncoder;
 use zarrs::array::{
     ArrayBytes, ArrayBytesDecodeIntoTarget, ArrayBytesFixedDisjointView, ArrayMetadata,
-    ArrayPartialDecoderTraits, ArrayToBytesCodecTraits, CodecChain, CodecOptions, DataType,
-    FillValue, StoragePartialDecoder, copy_fill_value_into, update_array_bytes,
+    ArrayPartialDecoderTraits, ArrayToBytesCodecTraits, CodecChain, CodecOptions, CodecTraits,
+    DataType, FillValue, StoragePartialDecoder, copy_fill_value_into, update_array_bytes,
 };
 use zarrs::config::global_config;
 use zarrs::convert::array_metadata_v2_to_v3;
 use zarrs::plugin::ZarrVersion;
-use zarrs::storage::{ReadableWritableListableStorage, StorageHandle, StoreKey};
+use zarrs::storage::{
+    ReadableWritableListableStorage, ReadableWritableStorage, StorageHandle, StoreKey,
+};
 
 mod chunk_item;
 mod concurrency;
@@ -137,6 +140,28 @@ impl CodecPipelineImpl {
                 .validate(chunk_subset.num_elements(), &self.data_type)
                 .map_codec_err()?;
 
+            if codec_options.experimental_partial_encoding()
+                && codec_chain.partial_encoder_capability().partial_encode
+                && self.store.supports_set_partial()
+            {
+                let store: ReadableWritableStorage = Arc::clone(&self.store) as _;
+                let input_output_handle =
+                    Arc::new(StoragePartialEncoder::new(store, item.key.clone()));
+                let partial_encoder = Arc::clone(&self.codec_chain)
+                    .partial_encoder(
+                        input_output_handle,
+                        array_shape,
+                        &self.data_type,
+                        &self.fill_value,
+                        codec_options,
+                    )
+                    .map_codec_err()?;
+                debug_assert!(partial_encoder.supports_partial_encode());
+                return partial_encoder
+                    .partial_encode(chunk_subset, &chunk_subset_bytes, codec_options)
+                    .map_codec_err();
+            }
+
             // Retrieve the chunk
             let chunk_bytes_old = self.retrieve_chunk_bytes(item, codec_chain, codec_options)?;
 
@@ -219,8 +244,10 @@ impl CodecPipelineImpl {
         num_threads=None,
         direct_io=false,
         file_handle_cache_size=0,
+        experimental_partial_encoding=false,
     ))]
     #[new]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         array_metadata: &str,
         mut store_config: StoreConfig,
@@ -230,6 +257,7 @@ impl CodecPipelineImpl {
         num_threads: Option<usize>,
         direct_io: bool,
         file_handle_cache_size: usize,
+        experimental_partial_encoding: bool,
     ) -> PyResult<Self> {
         store_config.direct_io(direct_io);
         store_config.file_handle_cache_size(file_handle_cache_size);
@@ -242,7 +270,9 @@ impl CodecPipelineImpl {
         };
         let codec_chain =
             Arc::new(CodecChain::from_metadata(&metadata_v3.codecs).map_py_err::<PyTypeError>()?);
-        let codec_options = CodecOptions::default().with_validate_checksums(validate_checksums);
+        let codec_options = CodecOptions::default()
+            .with_validate_checksums(validate_checksums)
+            .with_experimental_partial_encoding(experimental_partial_encoding);
 
         let chunk_concurrent_minimum =
             chunk_concurrent_minimum.unwrap_or(global_config().chunk_concurrent_minimum());
